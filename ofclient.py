@@ -107,7 +107,15 @@ class OverleafClient:
 
         self.dirData = json.loads(data[6:])[1]['rootFolder'][0]
 
-    def upload_data(self, datasrc, targetpath, overwrite=False):
+    def upload_data(self, datasrc: str, targetpath: str, overwrite=False) -> str:
+        """
+        uploads data to the repository
+
+        :param datasrc: local path to data (abspath prefered)
+        :param targetpath: target path in overleaf dir
+        :param overwrite: error on namespace conflict or overwrite
+        :return: file id of new file
+        """
         tokenized_path = targetpath.split('/')
         parent_dir = '/'.join(tokenized_path[:-1])
         new_name = tokenized_path[-1]
@@ -119,9 +127,14 @@ class OverleafClient:
                              cookies=better_cookies(self.sess_id, self.gclb),
                              data={"relativePath": "null", "name": new_name, 'type': dtype},
                              files={"qqfile": open(datasrc, "rb")})
-        proj_id = resp.content['entity_id']
-
+        file_id: str = json.loads(resp.content)['entity_id']
         # app rename on item
+        resp = requests.post("https://www.overleaf.com/project/%s/file/%s/rename" % (self.proj_id, file_id),
+                             headers=upload_file_headers(self.proj_id, self.csrf),
+                             cookies=better_cookies(self.sess_id, self.gclb),
+                             data={'name': new_name})
+        return file_id
+
 
 class HeartBeatThread(Thread):
     def __init__(self, ref):
