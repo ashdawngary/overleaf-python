@@ -47,6 +47,8 @@ class OverleafClient:
         self.hrt = HeartBeatThread(self)
         self.hrt.start()
         self.csrf = csrf
+        self.currentDocId = None
+        self.messageId = 1
 
     def getFileId(self, path: str) -> str:
         """
@@ -85,6 +87,12 @@ class OverleafClient:
                 data = self.ws.recv()
 
     def listdir(self, dirpath: str):
+        """
+        get raw dir data
+
+        :param dirpath: dir to obstain
+        :return: json data
+        """
         partpath = dirpath.split("/")
         cdir = self.dirData
         while len(partpath) > 1:
@@ -98,13 +106,18 @@ class OverleafClient:
             cdir = nextdir
         return cdir
 
-    def reloadProject(self):
+    def resync(self):
+        """
+        resync project space
+
+        :return: nothing
+        """
         with self.socket_lock as sk:
             self.ws.send('5:1+::{"name":"joinProject","args":[{"project_id":"%s"}]}' % self.proj_id)
             data = self.ws.recv()
             while data[:6] != "6:::1+":
                 data = self.ws.recv()
-
+            self.messageId = 2
         self.dirData = json.loads(data[6:])[1]['rootFolder'][0]
 
     def upload_data(self, datasrc: str, targetpath: str, overwrite=False) -> str:
@@ -133,7 +146,51 @@ class OverleafClient:
                              headers=upload_file_headers(self.proj_id, self.csrf),
                              cookies=better_cookies(self.sess_id, self.gclb),
                              data={'name': new_name})
+        self.resync()
         return file_id
+
+    def leaveDoc(self):
+        if self.currentDocId is not None:
+            with self.socket_lock as wk:
+                self.ws.send('5:%s+::{"name":"leaveDoc","args":["%s"]}' % (self.messageId, self.currentDocId))
+                data = self.ws.recv()
+                while '6:::%s' % self.messageId not in data:
+                    data = self.ws.recv()
+                self.messageId += 1
+                self.currentDocId = None
+
+    def readDoc(self, path, join=True):
+        fileid = self.getFileId(path)
+        self.leaveDoc()
+        data = None
+        with self.socket_lock as wk:
+            self.ws.send('5:%s+::{"name":"joinDoc","args":["%s",{"encodeRanges":true}]}' % (self.messageId, fileid))
+            data = self.ws.recv()
+            while '6:::%s+' % self.messageId not in data:
+                data = self.ws.recv()
+            prefix = '6:::%s+' % self.messageId
+            data = data[len(prefix):]
+            self.messageId += 1
+            self.currentDocId = fileid
+
+        if not join:
+            self.leaveDoc()
+        return json.loads(data)[1]
+
+    def updateCursor(self, row, col):
+        if self.currentDocId is None:
+            raise AssertionError('no current document selected to move cursor within.')
+
+        with self.socket_lock as wk:
+            self.ws.send(
+                '5:::{"name":"clientTracking.updatePosition","args":[{"row":%s,"column":%s,"doc_id":"%s"}]}' % (
+                    row, col, self.currentDocId))
+            data = self.ws.recv()
+            while '5:::' not in data:
+                data = self.ws.recv()
+            self.messageId += 1
+        dataout = json.loads(data[4:])
+        return dataout['args'][0]
 
 
 class HeartBeatThread(Thread):
